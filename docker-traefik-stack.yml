@@ -1,60 +1,53 @@
 version: '3.7'
 
+#volumes:
+#    prometheus_data: {}
+#    grafana_data: {}
+
 volumes:
-    prometheus_data: {}
-    grafana_data: {}
+ prometheus_config:
+   driver_opts:
+     type: "nfs"
+     o: "addr=42.112.3.215,nolock,soft,rw"
+     device: ":/nfsshare/monitor/prometheus/prometheus"
+ prometheus_data:
+   driver_opts:
+     type: "nfs"
+     o: "addr=42.112.3.215,nolock,soft,rw"
+     device: ":/nfsshare/monitor/prometheus/prometheus_data"
+ grafana_config:
+   driver_opts:
+     type: "nfs"
+     o: "addr=42.112.3.215,nolock,soft,rw"
+     device: ":/nfsshare/monitor/grafana/provisioning"
+ grafana_data:
+   driver_opts:
+     type: "nfs"
+     o: "addr=42.112.3.215,nolock,soft,rw"
+     device: ":/nfsshare/monitor/grafana/grafana_data"
+ blackbox_config:
+   driver_opts:
+     type: "nfs"
+     o: "addr=42.112.3.215,nolock,soft,rw"
+     device: ":/nfsshare/monitor/blackbox"
+ alert_config:
+   driver_opts:
+     type: "nfs"
+     o: "addr=42.112.3.215,nolock,soft,rw"
+     device: ":/nfsshare/monitor/alertmanager"
 
 networks:
   monitor-net:
     driver: overlay
     name: inbound
-  traefik:
-    driver: overlay
-    name: traefik
+  reverse-proxy-net:
+    external: true
 
 services:
-  traefik:
-    image: traefik:v1.7.12-alpine
-    command:
-      - "--logLevel=DEBUG"
-      - "--api"
-      - "--metrics"
-      - "--metrics.prometheus.buckets=0.1,0.3,1.2,5.0"
-      - "--docker"
-      - "--docker.swarmMode"
-      - "--docker.domain=docker.localhost"
-      - "--docker.watch"
-    networks:
-      - traefik
-      - monitor-net
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    ports:
-      - target: 80
-        published: 80
-        mode: host
-      - target: 443
-        published: 443
-        mode: host
-      - target: 8080
-        published: 8080
-        protocol: tcp
-        mode: ingress
-    deploy:
-      mode: global
-      placement:
-        constraints:
-          - node.role == manager
-      update_config:
-        parallelism: 1
-        delay: 10s
-      restart_policy:
-        condition: on-failure
-
   prometheus:
     image: prom/prometheus
     volumes:
-      - ./prometheus/:/etc/prometheus/
+      - prometheus_config:/etc/prometheus/
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -62,16 +55,36 @@ services:
       - '--web.console.libraries=/usr/share/prometheus/console_libraries'
       - '--web.console.templates=/usr/share/prometheus/consoles'
     networks:
-      - monitor-net     
+      - monitor-net
+      - reverse-proxy-net     
     deploy:
       placement:
         constraints:
-          - node.role==manager
+          # - "node.hostname==CacheNode-3-215"
+         - node.role==manager
       labels:
-          - "traefik.frontend.rule=Host:prometheus.localhost"
-          - "traefik.backend=prometheus"
-          - "traefik.port=9090"
-          - "traefik.docker.network=traefik"
+        # - "traefik.enable=true"
+        # - "traefik.docker.network=reverse-proxy-net"
+        # - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
+        # - "traefik.http.routers.prometheus.rule=Host(`prometheus.fptplay.net`)"
+        # - "traefik.http.routers.prometheus.service=prometheus"
+        # - "traefik.http.routers.prometheus.entrypoints=websecure"
+        # - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        # - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        # - "traefik.http.routers.prometheus.middlewares=https_redirect"
+        # - "traefik.http.routers.prometheus.tls"
+        - "traefik.enable=true"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.prometheus-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.prometheus-redircect.rule=Host(`prometheus.fptplay.net`)"
+        - "traefik.http.routers.prometheus-redircect.entrypoints=web"
+        - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
+        - "traefik.http.routers.prometheus.service=prometheus"
+        - "traefik.http.routers.prometheus.rule=Host(`prometheus.fptplay.net`)"
+        - "traefik.http.routers.prometheus.entrypoints=websecure"
+        - "traefik.http.routers.prometheus.tls"
       restart_policy:
         condition: on-failure
 
@@ -95,12 +108,891 @@ services:
       restart_policy:
         condition: on-failure
 
+# OTT
+
+  blackbox_anycast28_app22: &blackbox-exporter-anycast28
+    image: prom/blackbox-exporter
+    command: --config.file=/etc/blackbox/blackbox_exporter.yml
+    extra_hosts:
+      - "ssl-check.adsplay.net:183.80.199.237"
+      - "ssl-check.fptplay.net:183.80.199.237"
+      - "ssl-check.fptsmarthome.vn:183.80.199.237"
+      - "ssl-check.startalk.vn:183.80.199.237"
+      - "ssl-check.fptplayshopping.vn:183.80.199.237"
+      - "ssl-check.fptplayshow.vn:183.80.199.237"
+    volumes:
+      - blackbox_config:/etc/blackbox/
+    networks:
+      - monitor-net
+      - reverse-proxy-net     
+    deploy:
+      placement:
+        constraints:
+          # - "node.hostname==CacheNode-3-215"
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast28_app22-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast28_app22-redircect.rule=Host(`blackbox-anycast28-app22.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast28_app22-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast28_app22.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast28_app22.service=blackbox_anycast28_app22"
+        - "traefik.http.routers.blackbox_anycast28_app22.rule=Host(`blackbox-anycast28-app22.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast28_app22.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast28_app22.tls"
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 50M
+        reservations:
+          cpus: '0.25'
+          memory: 20M
+
+  blackbox_anycast28_app23:
+    <<: *blackbox-exporter-anycast28
+    extra_hosts:
+      - "ssl-check.adsplay.net:183.80.199.238"
+      - "ssl-check.fptplay.net:183.80.199.238"
+      - "ssl-check.fptsmarthome.vn:183.80.199.238"
+      - "ssl-check.startalk.vn:183.80.199.238"
+      - "ssl-check.fptplayshopping.vn:183.80.199.238"
+      - "ssl-check.fptplayshow.vn:183.80.199.238"
+    deploy:
+      placement:
+        constraints:
+          # - "node.hostname==CacheNode-3-215"
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast28_app23-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast28_app23-redircect.rule=Host(`blackbox-anycast28-app23.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast28_app23-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast28_app23.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast28_app23.service=blackbox_anycast28_app23"
+        - "traefik.http.routers.blackbox_anycast28_app23.rule=Host(`blackbox-anycast28-app23.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast28_app23.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast28_app23.tls"
+      restart_policy:
+        condition: on-failure
+
+  blackbox_anycast28_app24:
+    <<: *blackbox-exporter-anycast28
+    extra_hosts:
+      - "ssl-check.adsplay.net:42.117.9.175"
+      - "ssl-check.fptplay.net:42.117.9.175"
+      - "ssl-check.fptsmarthome.vn:42.117.9.175"
+      - "ssl-check.startalk.vn:42.117.9.175"
+      - "ssl-check.fptplayshopping.vn:42.117.9.175"
+      - "ssl-check.fptplayshow.vn:42.117.9.175"
+    deploy:
+      placement:
+        constraints:
+          # - "node.hostname==CacheNode-3-215"
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast28_app24-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast28_app24-redircect.rule=Host(`blackbox-anycast28-app24.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast28_app24-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast28_app24.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast28_app24.service=blackbox_anycast28_app24"
+        - "traefik.http.routers.blackbox_anycast28_app24.rule=Host(`blackbox-anycast28-app24.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast28_app24.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast28_app24.tls"
+      restart_policy:
+        condition: on-failure
+
+  blackbox_anycast28_app25:
+    <<: *blackbox-exporter-anycast28
+    extra_hosts:
+      - "ssl-check.adsplay.net:42.117.9.176"
+      - "ssl-check.fptplay.net:42.117.9.176"
+      - "ssl-check.fptsmarthome.vn:42.117.9.176"
+      - "ssl-check.startalk.vn:42.117.9.176"
+      - "ssl-check.fptplayshopping.vn:42.117.9.176"
+      - "ssl-check.fptplayshow.vn:42.117.9.176"
+    deploy:
+      placement:
+        constraints:
+          # - "node.hostname==CacheNode-3-215"
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast28_app25-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast28_app25-redircect.rule=Host(`blackbox-anycast28-app25.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast28_app25-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast28_app25.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast28_app25.service=blackbox_anycast28_app25"
+        - "traefik.http.routers.blackbox_anycast28_app25.rule=Host(`blackbox-anycast28-app25.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast28_app25.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast28_app25.tls"
+      restart_policy:
+        condition: on-failure
+
+  blackbox_anycast28_proxy01:
+    <<: *blackbox-exporter-anycast28
+    extra_hosts:
+      - "ssl-check.adsplay.net:183.80.199.59"
+      - "ssl-check.fptplay.net:183.80.199.59"
+      - "ssl-check.fptsmarthome.vn:183.80.199.59"
+      - "ssl-check.startalk.vn:183.80.199.59"
+      - "ssl-check.fptplayshopping.vn:183.80.199.59"
+      - "ssl-check.fptplayshow.vn:183.80.199.59"
+    deploy:
+      placement:
+        constraints:
+          # - "node.hostname==CacheNode-3-215"
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast28_proxy01-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast28_proxy01-redircect.rule=Host(`blackbox-anycast28-proxy01.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast28_proxy01-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast28_proxy01.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast28_proxy01.service=blackbox_anycast28_proxy01"
+        - "traefik.http.routers.blackbox_anycast28_proxy01.rule=Host(`blackbox-anycast28-proxy01.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast28_proxy01.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast28_proxy01.tls"
+      restart_policy:
+        condition: on-failure
+
+  blackbox_anycast28_proxy02:
+    <<: *blackbox-exporter-anycast28
+    extra_hosts:
+      - "ssl-check.adsplay.net:183.80.199.60"
+      - "ssl-check.fptplay.net:183.80.199.60"
+      - "ssl-check.fptsmarthome.vn:183.80.199.60"
+      - "ssl-check.startalk.vn:183.80.199.60"
+      - "ssl-check.fptplayshopping.vn:183.80.199.60"
+      - "ssl-check.fptplayshow.vn:183.80.199.60"
+    deploy:
+      placement:
+        constraints:
+          # - "node.hostname==CacheNode-3-215"
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast28_proxy02-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast28_proxy02-redircect.rule=Host(`blackbox-anycast28-proxy02.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast28_proxy02-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast28_proxy02.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast28_proxy02.service=blackbox_anycast28_proxy02"
+        - "traefik.http.routers.blackbox_anycast28_proxy02.rule=Host(`blackbox-anycast28-proxy02.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast28_proxy02.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast28_proxy02.tls"
+      restart_policy:
+        condition: on-failure
+
+  blackbox_anycast28_proxy03:
+    <<: *blackbox-exporter-anycast28
+    extra_hosts:
+      - "ssl-check.adsplay.net:183.80.199.61"
+      - "ssl-check.fptplay.net:183.80.199.61"
+      - "ssl-check.fptsmarthome.vn:183.80.199.61"
+      - "ssl-check.startalk.vn:183.80.199.61"
+      - "ssl-check.fptplayshopping.vn:183.80.199.61"
+      - "ssl-check.fptplayshow.vn:183.80.199.61"
+    deploy:
+      placement:
+        constraints:
+          # - "node.hostname==CacheNode-3-215"
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast28_proxy03-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast28_proxy03-redircect.rule=Host(`blackbox-anycast28-proxy03.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast28_proxy03-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast28_proxy03.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast28_proxy03.service=blackbox_anycast28_proxy03"
+        - "traefik.http.routers.blackbox_anycast28_proxy03.rule=Host(`blackbox-anycast28-proxy03.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast28_proxy03.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast28_proxy03.tls"
+      restart_policy:
+        condition: on-failure
+
+  blackbox_anycast23_cache13: &blackbox-exporter-anycast23
+    image: prom/blackbox-exporter
+    command: --config.file=/etc/blackbox/blackbox_exporter.yml
+    extra_hosts:
+      - "ssl-check.fptplay.vn:183.80.199.114"
+    volumes:
+      - blackbox_config:/etc/blackbox/
+    networks:
+      - monitor-net
+      - reverse-proxy-net     
+    deploy:
+      placement:
+        constraints:
+          # - "node.hostname==CacheNode-3-215"
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast23_cache13-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast23_cache13-redircect.rule=Host(`blackbox-anycast23-cache13.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast23_cache13-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast23_cache13.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast23_cache13.service=blackbox_anycast23_cache13"
+        - "traefik.http.routers.blackbox_anycast23_cache13.rule=Host(`blackbox-anycast23-cache13.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast23_cache13.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast23_cache13.tls"
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 50M
+        reservations:
+          cpus: '0.25'
+          memory: 20M
+
+  blackbox_anycast23_cache14:
+    <<: *blackbox-exporter-anycast23
+    extra_hosts:
+      - "ssl-check.fptplay.vn:183.80.199.115"
+    deploy:
+      placement:
+        constraints:
+          # - "node.hostname==CacheNode-3-215"
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast23_cache14-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast23_cache14-redircect.rule=Host(`blackbox-anycast23-cache14.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast23_cache14-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast23_cache14.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast23_cache14.service=blackbox_anycast23_cache14"
+        - "traefik.http.routers.blackbox_anycast23_cache14.rule=Host(`blackbox-anycast23-cache14.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast23_cache14.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast23_cache14.tls"
+      restart_policy:
+        condition: on-failure
+
+  blackbox_anycast23_cache15:
+    <<: *blackbox-exporter-anycast23
+    extra_hosts:
+      - "ssl-check.fptplay.vn:42.119.252.105"
+    deploy:
+      placement:
+        constraints:
+          # - "node.hostname==CacheNode-3-215"
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast23_cache15-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast23_cache15-redircect.rule=Host(`blackbox-anycast23-cache15.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast23_cache15-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast23_cache15.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast23_cache15.service=blackbox_anycast23_cache15"
+        - "traefik.http.routers.blackbox_anycast23_cache15.rule=Host(`blackbox-anycast23-cache15.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast23_cache15.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast23_cache15.tls"
+      restart_policy:
+        condition: on-failure
+
+  blackbox_anycast23_cache22:
+    <<: *blackbox-exporter-anycast23
+    extra_hosts:
+      - "ssl-check.fptplay.vn:42.119.252.103"   
+    deploy:
+      placement:
+        constraints:
+          # - "node.hostname==CacheNode-3-215"
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast23_cache22-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast23_cache22-redircect.rule=Host(`blackbox-anycast23-cache22.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast23_cache22-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast23_cache22.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast23_cache22.service=blackbox_anycast23_cache22"
+        - "traefik.http.routers.blackbox_anycast23_cache22.rule=Host(`blackbox-anycast23-cache22.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast23_cache22.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast23_cache22.tls"
+      restart_policy:
+        condition: on-failure
+
+  blackbox_anycast26_cache02: &blackbox-exporter-anycast26
+    image: prom/blackbox-exporter
+    command: --config.file=/etc/blackbox/blackbox_exporter.yml
+    extra_hosts:
+      - "ssl-check.adsplay.net:42.116.8.184"
+      - "ssl-check.fptplay.net:42.116.8.184"
+      - "ssl-check.startalk.vn:42.116.8.184"
+    volumes:
+      - blackbox_config:/etc/blackbox/
+    networks:
+      - monitor-net
+      - reverse-proxy-net 
+    deploy:
+      placement:
+        constraints:
+          # - "node.hostname==CacheNode-3-215"
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast26_cache02-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast26_cache02-redircect.rule=Host(`blackbox-anycast26-cache02.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast26_cache02-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast26_cache02.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast26_cache02.service=blackbox_anycast26_cache02"
+        - "traefik.http.routers.blackbox_anycast26_cache02.rule=Host(`blackbox-anycast26-cache02.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast26_cache02.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast26_cache02.tls"
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 50M
+        reservations:
+          cpus: '0.25'
+          memory: 20M
+
+  blackbox_anycast26_cache10:
+    <<: *blackbox-exporter-anycast26
+    extra_hosts:
+      - "ssl-check.adsplay.net:183.80.199.52"
+      - "ssl-check.fptplay.net:183.80.199.52"
+      - "ssl-check.startalk.vn:183.80.199.52"
+    deploy:
+      placement:
+        constraints:
+          # - "node.hostname==CacheNode-3-215"
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast26_cache10-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast26_cache10-redircect.rule=Host(`blackbox-anycast26-cache10.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast26_cache10-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast26_cache10.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast26_cache10.service=blackbox_anycast26_cache10"
+        - "traefik.http.routers.blackbox_anycast26_cache10.rule=Host(`blackbox-anycast26-cache10.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast26_cache10.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast26_cache10.tls"
+      restart_policy:
+        condition: on-failure
+
+  blackbox_anycast26_cache11:
+    <<: *blackbox-exporter-anycast26
+    extra_hosts:
+      - "ssl-check.adsplay.net:183.80.199.117"
+      - "ssl-check.fptplay.net:183.80.199.117"
+      - "ssl-check.startalk.vn:183.80.199.117"
+    deploy:
+      placement:
+        constraints:
+          # - "node.hostname==CacheNode-3-215"
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast26_cache11-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast26_cache11-redircect.rule=Host(`blackbox-anycast26-cache11.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast26_cache11-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast26_cache11.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast26_cache11.service=blackbox_anycast26_cache11"
+        - "traefik.http.routers.blackbox_anycast26_cache11.rule=Host(`blackbox-anycast26-cache11.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast26_cache11.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast26_cache11.tls"
+      restart_policy:
+        condition: on-failure
+
+  blackbox_anycast26_cache26:
+    <<: *blackbox-exporter-anycast26
+    extra_hosts:
+      - "ssl-check.adsplay.net:42.116.8.178"
+      - "ssl-check.fptplay.net:42.116.8.178"
+      - "ssl-check.startalk.vn:42.116.8.178"  
+    deploy:
+      placement:
+        constraints:
+          # - "node.hostname==CacheNode-3-215"
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast26_cache26-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast26_cache26-redircect.rule=Host(`blackbox-anycast26-cache26.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast26_cache26-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast26_cache26.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast26_cache26.service=blackbox_anycast26_cache26"
+        - "traefik.http.routers.blackbox_anycast26_cache26.rule=Host(`blackbox-anycast26-cache26.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast26_cache26.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast26_cache26.tls"
+      restart_policy:
+        condition: on-failure
+
+  blackbox_anycast218-staging_k8s-fplay-gateway:
+    image: prom/blackbox-exporter
+    command: --config.file=/etc/blackbox/blackbox_exporter.yml
+    extra_hosts:
+      - "ssl-check.fptplayshow.vn:118.68.169.218"
+      - "ssl-check.fptplayshopping.vn:118.68.169.218"
+      - "ssl-check.fptsmarthome.vn:118.68.169.218"
+      - "ssl-check.fptplay.vn:118.68.169.218"
+      - "ssl-check.fptplay.net:118.68.169.218"
+      - "ssl-check.fptplay.tv:118.68.169.218"
+      - "ssl-check.adsplay.net:118.68.169.218"
+    volumes:
+      - blackbox_config:/etc/blackbox/
+    networks:
+      - monitor-net
+      - reverse-proxy-net 
+    deploy:
+      placement:
+        constraints:
+          - "node.labels.monitorSSLPub == true"
+        #  - node.role==manager
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast218-staging_k8s-fplay-gateway-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast218-staging_k8s-fplay-gateway-redircect.rule=Host(`blackbox_anycast218-staging.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast218-staging_k8s-fplay-gateway-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast218-staging_k8s-fplay-gateway.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast218-staging_k8s-fplay-gateway.service=blackbox_anycast218-staging_k8s-fplay-gateway"
+        - "traefik.http.routers.blackbox_anycast218-staging_k8s-fplay-gateway.rule=Host(`blackbox_anycast218-staging.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast218-staging_k8s-fplay-gateway.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast218-staging_k8s-fplay-gateway.tls"
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 50M
+        reservations:
+          cpus: '0.25'
+          memory: 20M
+
+# IPTV
+  blackbox_anycast250_proxy-local-2-248: &blackbox-exporter-anycast250
+    image: prom/blackbox-exporter
+    command: --config.file=/etc/blackbox/blackbox_exporter.yml
+    extra_hosts:
+      - "ssl-check.fptplay.tv:172.20.2.248"
+      - "ssl-check.fptplay.net:172.20.2.248"
+      - "ssl-check.fbox.fpt.vn:172.20.2.248"
+      - "ssl-check.adsplay.net:172.20.2.248"
+    volumes:
+      - blackbox_config:/etc/blackbox/
+    networks:
+      - monitor-net
+      - reverse-proxy-net 
+    deploy:
+      placement:
+        constraints:
+          - "node.labels.monitorSSLLocal == true"
+        #  - node.role==manager
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast250_proxy-local-2-248-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast250_proxy-local-2-248-redircect.rule=Host(`blackbox-anycast250-proxy-local-2-248.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast250_proxy-local-2-248-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast250_proxy-local-2-248.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast250_proxy-local-2-248.service=blackbox_anycast250_proxy-local-2-248"
+        - "traefik.http.routers.blackbox_anycast250_proxy-local-2-248.rule=Host(`blackbox-anycast250-proxy-local-2-248.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast250_proxy-local-2-248.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast250_proxy-local-2-248.tls"
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 50M
+        reservations:
+          cpus: '0.25'
+          memory: 20M
+
+  blackbox_anycast250_proxy-local-2-249:
+    <<: *blackbox-exporter-anycast250
+    extra_hosts:
+      - "ssl-check.fptplay.tv:172.20.2.249"
+      - "ssl-check.fptplay.net:172.20.2.249"
+      - "ssl-check.fbox.fpt.vn:172.20.2.249"
+      - "ssl-check.adsplay.net:172.20.2.249"  
+    deploy:
+      placement:
+        constraints:
+          - "node.labels.monitorSSLLocal == true"
+        #  - node.role==manager
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast250_proxy-local-2-249-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast250_proxy-local-2-249-redircect.rule=Host(`blackbox-anycast250-proxy-local-2-249.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast250_proxy-local-2-249-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast250_proxy-local-2-249.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast250_proxy-local-2-249.service=blackbox_anycast250_proxy-local-2-249"
+        - "traefik.http.routers.blackbox_anycast250_proxy-local-2-249.rule=Host(`blackbox-anycast250-proxy-local-2-249.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast250_proxy-local-2-249.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast250_proxy-local-2-249.tls"
+      restart_policy:
+        condition: on-failure
+
+  blackbox_anycast29_pushStream-166-173: &blackbox-exporter-anycast29
+    image: prom/blackbox-exporter
+    command: --config.file=/etc/blackbox/blackbox_exporter.yml
+    extra_hosts:
+      - "ssl-check.fptplay.net:118.69.166.173"
+    volumes:
+      - blackbox_config:/etc/blackbox/
+    networks:
+      - monitor-net
+      - reverse-proxy-net 
+    deploy:
+      placement:
+        constraints:
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast29_pushStream-166-173-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast29_pushStream-166-173-redircect.rule=Host(`blackbox-anycast29-pushStream-166-173.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast29_pushStream-166-173-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast29_pushStream-166-173.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast29_pushStream-166-173.service=blackbox_anycast29_pushStream-166-173"
+        - "traefik.http.routers.blackbox_anycast29_pushStream-166-173.rule=Host(`blackbox-anycast29-pushStream-166-173.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast29_pushStream-166-173.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast29_pushStream-166-173.tls"
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 50M
+        reservations:
+          cpus: '0.25'
+          memory: 20M
+
+  blackbox_anycast29_pushStream-166-174:
+    <<: *blackbox-exporter-anycast29
+    extra_hosts:
+      - "ssl-check.fptplay.net:118.69.166.174" 
+    deploy:
+      placement:
+        constraints:
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast29_pushStream-166-174-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast29_pushStream-166-174-redircect.rule=Host(`blackbox-anycast29-pushStream-166-174.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast29_pushStream-166-174-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast29_pushStream-166-174.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast29_pushStream-166-174.service=blackbox_anycast29_pushStream-166-174"
+        - "traefik.http.routers.blackbox_anycast29_pushStream-166-174.rule=Host(`blackbox-anycast29-pushStream-166-174.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast29_pushStream-166-174.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast29_pushStream-166-174.tls"
+      restart_policy:
+        condition: on-failure
+
+  blackbox_proxy-web-133-215:
+    image: prom/blackbox-exporter
+    command: --config.file=/etc/blackbox/blackbox_exporter.yml
+    extra_hosts:
+      - "ssl-check.fbox.fpt.vn:183.80.133.215"
+    volumes:
+      - blackbox_config:/etc/blackbox/
+    networks:
+      - monitor-net
+      - reverse-proxy-net 
+    deploy:
+      placement:
+        constraints:
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_proxy-web-133-215-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_proxy-web-133-215-redircect.rule=Host(`blackbox-proxy-web-133-215.fptplay.net`)"
+        - "traefik.http.routers.blackbox_proxy-web-133-215-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_proxy-web-133-215.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_proxy-web-133-215.service=blackbox_proxy-web-133-215"
+        - "traefik.http.routers.blackbox_proxy-web-133-215.rule=Host(`blackbox-proxy-web-133-215.fptplay.net`)"
+        - "traefik.http.routers.blackbox_proxy-web-133-215.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_proxy-web-133-215.tls"
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 50M
+        reservations:
+          cpus: '0.25'
+          memory: 20M
+
+  blackbox_proxy-Dev-Staging-245-121:
+    image: prom/blackbox-exporter
+    command: --config.file=/etc/blackbox/blackbox_exporter.yml
+    extra_hosts:
+      - "ssl-check-staging.fbox.fpt.vn:42.114.245.121"
+      - "ssl-check-staging.fptplay.vn:42.114.245.121"
+      - "ssl-check-staging.fptplay.net:42.114.245.121"
+    volumes:
+      - blackbox_config:/etc/blackbox/
+    networks:
+      - monitor-net
+      - reverse-proxy-net 
+    deploy:
+      placement:
+        constraints:
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_proxy-Dev-Staging-245-121-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_proxy-Dev-Staging-245-121-redircect.rule=Host(`blackbox_proxy-dev-staging-245-121.fptplay.net`)"
+        - "traefik.http.routers.blackbox_proxy-Dev-Staging-245-121-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_proxy-Dev-Staging-245-121.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_proxy-Dev-Staging-245-121.service=blackbox_proxy-Dev-Staging-245-121"
+        - "traefik.http.routers.blackbox_proxy-Dev-Staging-245-121.rule=Host(`blackbox_proxy-dev-staging-245-121.fptplay.net`)"
+        - "traefik.http.routers.blackbox_proxy-Dev-Staging-245-121.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_proxy-Dev-Staging-245-121.tls"
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 50M
+        reservations:
+          cpus: '0.25'
+          memory: 20M
+
+  blackbox_anycast252-2_proxy-api-244-9: &blackbox-exporter-anycast252-2
+    image: prom/blackbox-exporter
+    command: --config.file=/etc/blackbox/blackbox_exporter.yml
+    extra_hosts:
+      - "ssl-check.fptplay.net:42.114.244.9"
+      - "ssl-check.fptplay.vn:42.114.244.9"
+      - "ssl-check.fbox.fpt.vn:42.114.244.9"
+    volumes:
+      - blackbox_config:/etc/blackbox/
+    networks:
+      - monitor-net
+      - reverse-proxy-net 
+    deploy:
+      placement:
+        constraints:
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-244-9-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-244-9-redircect.rule=Host(`blackbox-anycast252-2-proxy-api-244-9.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-244-9-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast252-2_proxy-api-244-9.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-244-9.service=blackbox_anycast252-2_proxy-api-244-9"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-244-9.rule=Host(`blackbox-anycast252-2-proxy-api-244-9.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-244-9.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-244-9.tls"
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 50M
+        reservations:
+          cpus: '0.25'
+          memory: 20M
+
+  blackbox_anycast252-2_proxy-api-245-122:
+    <<: *blackbox-exporter-anycast252-2
+    extra_hosts:
+      - "ssl-check.fptplay.net:42.114.245.122" 
+      - "ssl-check.fptplay.vn:42.114.245.122"
+      - "ssl-check.fbox.fpt.vn:42.114.245.122"
+    deploy:
+      placement:
+        constraints:
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-245-122-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-245-122-redircect.rule=Host(`blackbox-anycast252-2-proxy-api-245-122.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-245-122-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast252-2_proxy-api-245-122.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-245-122.service=blackbox_anycast252-2_proxy-api-245-122"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-245-122.rule=Host(`blackbox-anycast252-2-proxy-api-245-122.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-245-122.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-245-122.tls"
+      restart_policy:
+        condition: on-failure
+
+  blackbox_anycast252-2_proxy-api-252-241:
+    <<: *blackbox-exporter-anycast252-2
+    extra_hosts:
+      - "ssl-check.fptplay.net:42.119.252.241" 
+      - "ssl-check.fptplay.vn:42.119.252.241"
+      - "ssl-check.fbox.fpt.vn:42.119.252.241"
+    deploy:
+      placement:
+        constraints:
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-252-241-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-252-241-redircect.rule=Host(`blackbox-anycast252-2-proxy-api-252-241.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-252-241-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast252-2_proxy-api-252-241.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-252-241.service=blackbox_anycast252-2_proxy-api-252-241"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-252-241.rule=Host(`blackbox-anycast252-2-proxy-api-252-241.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-252-241.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-252-241.tls"
+      restart_policy:
+        condition: on-failure
+
+  blackbox_anycast252-2_proxy-api-252-242:
+    <<: *blackbox-exporter-anycast252-2
+    extra_hosts:
+      - "ssl-check.fptplay.net:42.119.252.242" 
+      - "ssl-check.fptplay.vn:42.119.252.242"
+      - "ssl-check.fbox.fpt.vn:42.119.252.242"
+    deploy:
+      placement:
+        constraints:
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-252-242-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-252-242-redircect.rule=Host(`blackbox_anycast252-2_proxy-api-252-242.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-252-242-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast252-2_proxy-api-252-242.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-252-242.service=blackbox_anycast252-2_proxy-api-252-242"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-252-242.rule=Host(`blackbox_anycast252-2_proxy-api-252-242.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-252-242.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-252-242.tls"
+      restart_policy:
+        condition: on-failure
+
+  blackbox_anycast252-2_proxy-api-207-77:
+    <<: *blackbox-exporter-anycast252-2
+    extra_hosts:
+      - "ssl-check.fptplay.net:42.115.207.77" 
+      - "ssl-check.fptplay.vn:42.115.207.77"
+      - "ssl-check.fbox.fpt.vn:42.115.207.77"
+    deploy:
+      placement:
+        constraints:
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-207-77-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-207-77-redircect.rule=Host(`blackbox-anycast252-2-proxy-api-207-77.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-207-77-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast252-2_proxy-api-207-77.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-207-77.service=blackbox_anycast252-2_proxy-api-207-77"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-207-77.rule=Host(`blackbox-anycast252-2-proxy-api-207-77.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-207-77.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-207-77.tls"
+      restart_policy:
+        condition: on-failure
+
+  blackbox_anycast252-2_proxy-api-207-78:
+    <<: *blackbox-exporter-anycast252-2
+    extra_hosts:
+      - "ssl-check.fptplay.net:42.115.207.78" 
+      - "ssl-check.fptplay.vn:42.115.207.78"
+      - "ssl-check.fbox.fpt.vn:42.115.207.78"
+    deploy:
+      placement:
+        constraints:
+          - "node.labels.monitorSSLPub == true"
+      labels:
+        - "traefik.enable=false"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-207-78-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-207-78-redircect.rule=Host(blackbox-anycast252-2-proxy-api-207-78.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-207-78-redircect.entrypoints=web"
+        - "traefik.http.services.blackbox_anycast252-2_proxy-api-207-78.loadbalancer.server.port=9115"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-207-78.service=blackbox_anycast252-2_proxy-api-207-78"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-207-78.rule=Host(blackbox-anycast252-2-proxy-api-207-78.fptplay.net`)"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-207-78.entrypoints=websecure"
+        - "traefik.http.routers.blackbox_anycast252-2_proxy-api-207-78.tls"
+      restart_policy:
+        condition: on-failure
+
   alertmanager:
     image: prom/alertmanager
     ports:
       - 9093:9093
     volumes:
-      - "./alertmanager/:/etc/alertmanager/"
+      - "alert_config:/etc/alertmanager/"
     networks:
       - monitor-net
     command:
@@ -109,7 +1001,8 @@ services:
     deploy:
       placement:
         constraints:
-           - node.role==manager
+          - "node.hostname==CacheNode-3-215"
+          #  - node.role==manager
       restart_policy:
         condition: on-failure    
 
@@ -121,7 +1014,7 @@ services:
       - /sys:/sys:ro
       - /var/lib/docker/:/var/lib/docker:ro
     ports:
-      - 8088:8080
+      - 8080:8080
     networks:
       - monitor-net
     deploy:
@@ -135,20 +1028,45 @@ services:
       - prometheus
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning/:/etc/grafana/provisioning/
-    env_file:
-      - ./grafana/config.monitoring
+      - grafana_config:/etc/grafana/provisioning/
+    # env_file:
+    #   - ./grafana/config.monitoring
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=p@&&vv0rdAdmin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=https://grafana.fptplay.net
+
     networks:
       - monitor-net
+      - reverse-proxy-net
     user: "472"
     deploy:
       placement:
         constraints:
-          - node.role==manager
+          # - node.role==manager
+          - "node.hostname==CacheNode-3-215"
       labels:
-        -  "traefik.frontend.rule=Host:grafana.localhost"
-        - "traefik.backend=grafana"
-        - "traefik.port=3000"
-        - "traefik.docker.network=traefik"
+        # - "traefik.enable=true"
+        # - "traefik.docker.network=reverse-proxy-net"
+        # - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+        # - "traefik.http.routers.grafana.rule=Host(`grafana.fptplay.net`)"
+        # - "traefik.http.routers.grafana.service=grafana"
+        # - "traefik.http.routers.grafana.entrypoints=websecure"
+        # - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        # - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        # - "traefik.http.routers.grafana.middlewares=https_redirect"
+        # - "traefik.http.routers.grafana.tls"
+        - "traefik.enable=true"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.grafana-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.grafana-redircect.rule=Host(`grafana.fptplay.net`)"
+        - "traefik.http.routers.grafana-redircect.entrypoints=web"
+        - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+        - "traefik.http.routers.grafana.service=grafana"
+        - "traefik.http.routers.grafana.rule=Host(`grafana.fptplay.net`)"
+        - "traefik.http.routers.grafana.entrypoints=websecure"
+        - "traefik.http.routers.grafana.tls"
       restart_policy:
         condition: on-failure

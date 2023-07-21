@@ -1,30 +1,8 @@
 version: '3.7'
 
-#volumes:
-#    prometheus_data: {}
-#    grafana_data: {}
-
 volumes:
- prometheus_config:
-   driver_opts:
-     type: "nfs"
-     o: "addr=42.112.3.215,nolock,soft,rw"
-     device: ":/nfsshare/monitor/prometheus/prometheus"
- prometheus_data:
-   driver_opts:
-     type: "nfs"
-     o: "addr=42.112.3.215,nolock,soft,rw"
-     device: ":/nfsshare/monitor/prometheus/prometheus_data"
- grafana_config:
-   driver_opts:
-     type: "nfs"
-     o: "addr=42.112.3.215,nolock,soft,rw"
-     device: ":/nfsshare/monitor/grafana/provisioning"
- grafana_data:
-   driver_opts:
-     type: "nfs"
-     o: "addr=42.112.3.215,nolock,soft,rw"
-     device: ":/nfsshare/monitor/grafana/grafana_data"
+    prometheus_data: {}
+    grafana_data: {}
 
 networks:
   monitor-net:
@@ -34,7 +12,7 @@ services:
   prometheus:
     image: prom/prometheus:v2.36.2
     volumes:
-      - prometheus_config:/etc/prometheus/
+      - ./prometheus/:/etc/prometheus/
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -53,8 +31,7 @@ services:
     deploy:
       placement:
         constraints:
-          - "node.hostname==CacheNode-3-215"
-#          - node.role==manager
+          - node.role==manager
       restart_policy:
         condition: on-failure
 
@@ -75,11 +52,6 @@ services:
       - monitor-net
     deploy:
       mode: global
-      # mode: replicated
-      # replicas: 1
-      # placement:
-      #   constraints: 
-      #     - "node.labels.nodeExporter == true"
       restart_policy:
           condition: on-failure
 
@@ -114,24 +86,18 @@ services:
       - monitor-net
     deploy:
       mode: global
-      # mode: replicated
-      # replicas: 1
-      # placement:
-      #   constraints: 
-      #     - "node.labels.nodeExporter == true"
       restart_policy:
           condition: on-failure
 
   grafana:
-#    image: grafana/grafana
-    image: grafana/grafana:8.5.14
+    image: grafana/grafana
     depends_on:
       - prometheus
     ports:
       - 3000:3000
     volumes:
       - grafana_data:/var/lib/grafana
-      - grafana_config:/etc/grafana/provisioning/
+      - ./grafana/provisioning/:/etc/grafana/provisioning/
     env_file:
       - ./grafana/config.monitoring
     networks:
@@ -140,8 +106,7 @@ services:
     deploy:
       placement:
         constraints:
-          - "node.hostname==CacheNode-3-215"
-#          - node.role==manager
+          - node.role==manager
       restart_policy:
         condition: on-failure
 

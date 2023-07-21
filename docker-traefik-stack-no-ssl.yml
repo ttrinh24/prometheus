@@ -1,0 +1,193 @@
+version: '3.7'
+
+#volumes:
+#    prometheus_data: {}
+#    grafana_data: {}
+
+volumes:
+ prometheus_config:
+   driver_opts:
+     type: "nfs"
+     o: "addr=42.112.3.215,nolock,soft,rw"
+     device: ":/nfsshare/monitor/prometheus/prometheus"
+ prometheus_data:
+   driver_opts:
+     type: "nfs"
+     o: "addr=42.112.3.215,nolock,soft,rw"
+     device: ":/nfsshare/monitor/prometheus/prometheus_data"
+ grafana_config:
+   driver_opts:
+     type: "nfs"
+     o: "addr=42.112.3.215,nolock,soft,rw"
+     device: ":/nfsshare/monitor/grafana/provisioning"
+ grafana_data:
+   driver_opts:
+     type: "nfs"
+     o: "addr=42.112.3.215,nolock,soft,rw"
+     device: ":/nfsshare/monitor/grafana/grafana_data"
+ blackbox_config:
+   driver_opts:
+     type: "nfs"
+     o: "addr=42.112.3.215,nolock,soft,rw"
+     device: ":/nfsshare/monitor/blackbox"
+ alert_config:
+   driver_opts:
+     type: "nfs"
+     o: "addr=42.112.3.215,nolock,soft,rw"
+     device: ":/nfsshare/monitor/alertmanager"
+
+networks:
+  monitor-net:
+    driver: overlay
+    name: inbound
+  reverse-proxy-net:
+    external: true
+
+services:
+  prometheus:
+    image: prom/prometheus
+    volumes:
+      - prometheus_config:/etc/prometheus/
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - monitor-net
+      - reverse-proxy-net     
+    deploy:
+      placement:
+        constraints:
+          # - "node.hostname==CacheNode-3-215"
+         - node.role==manager
+      labels:
+        # - "traefik.enable=true"
+        # - "traefik.docker.network=reverse-proxy-net"
+        # - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
+        # - "traefik.http.routers.prometheus.rule=Host(`prometheus.fptplay.net`)"
+        # - "traefik.http.routers.prometheus.service=prometheus"
+        # - "traefik.http.routers.prometheus.entrypoints=websecure"
+        # - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        # - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        # - "traefik.http.routers.prometheus.middlewares=https_redirect"
+        # - "traefik.http.routers.prometheus.tls"
+        - "traefik.enable=true"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.prometheus-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.prometheus-redircect.rule=Host(`prometheus.fptplay.net`)"
+        - "traefik.http.routers.prometheus-redircect.entrypoints=web"
+        - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
+        - "traefik.http.routers.prometheus.service=prometheus"
+        - "traefik.http.routers.prometheus.rule=Host(`prometheus.fptplay.net`)"
+        - "traefik.http.routers.prometheus.entrypoints=websecure"
+        - "traefik.http.routers.prometheus.tls"
+      restart_policy:
+        condition: on-failure
+
+  node-exporter:
+    image: prom/node-exporter
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command: 
+      - '--path.procfs=/host/proc' 
+      - '--path.sysfs=/host/sys'
+      - --collector.filesystem.ignored-mount-points
+      - "^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/containers|rootfs/var/lib/docker/overlay2|rootfs/run/docker/netns|rootfs/var/lib/docker/aufs)($$|/)"
+    ports:
+      - 9100:9100
+    networks:
+      - monitor-net
+    deploy:
+      mode: global
+      restart_policy:
+        condition: on-failure
+
+  alertmanager:
+    image: prom/alertmanager
+    ports:
+      - 9093:9093
+    volumes:
+      - "alert_config:/etc/alertmanager/"
+    networks:
+      - monitor-net
+    command:
+      - '--config.file=/etc/alertmanager/config.yml'
+      - '--storage.path=/alertmanager'
+    deploy:
+      placement:
+        constraints:
+          - "node.hostname==CacheNode-3-215"
+          #  - node.role==manager
+      restart_policy:
+        condition: on-failure    
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    ports:
+      - 8080:8080
+    networks:
+      - monitor-net
+    deploy:
+      mode: global
+      restart_policy:
+        condition: on-failure
+
+  grafana:
+    image: grafana/grafana
+    depends_on:
+      - prometheus
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - grafana_config:/etc/grafana/provisioning/
+    # env_file:
+    #   - ./grafana/config.monitoring
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=p@&&vv0rdAdmin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=https://grafana.fptplay.net
+
+    networks:
+      - monitor-net
+      - reverse-proxy-net
+    user: "472"
+    deploy:
+      placement:
+        constraints:
+          # - node.role==manager
+          - "node.hostname==CacheNode-3-215"
+      labels:
+        # - "traefik.enable=true"
+        # - "traefik.docker.network=reverse-proxy-net"
+        # - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+        # - "traefik.http.routers.grafana.rule=Host(`grafana.fptplay.net`)"
+        # - "traefik.http.routers.grafana.service=grafana"
+        # - "traefik.http.routers.grafana.entrypoints=websecure"
+        # - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        # - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        # - "traefik.http.routers.grafana.middlewares=https_redirect"
+        # - "traefik.http.routers.grafana.tls"
+        - "traefik.enable=true"
+        - "traefik.docker.network=reverse-proxy-net"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+        - "traefik.http.routers.grafana-redircect.middlewares=https_redirect"
+        - "traefik.http.routers.grafana-redircect.rule=Host(`grafana.fptplay.net`)"
+        - "traefik.http.routers.grafana-redircect.entrypoints=web"
+        - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+        - "traefik.http.routers.grafana.service=grafana"
+        - "traefik.http.routers.grafana.rule=Host(`grafana.fptplay.net`)"
+        - "traefik.http.routers.grafana.entrypoints=websecure"
+        - "traefik.http.routers.grafana.tls"
+      restart_policy:
+        condition: on-failure
